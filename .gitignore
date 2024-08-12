@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next.js
+.next/
+out/
+
+# env
+.env*.local
+
+# macOS app (Swift Package Manager / Xcode)
+macos/.build/
+macos/.swiftpm/
+macos/*.xcodeproj/xcuserdata/
+DerivedData/
+
+# misc
+.DS_Store
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
