@@ -1,0 +1,21 @@
+/* Shelf brand tokens: warm paper neutrals, the Shelf orange accent and forest darks. */
+:root {
+  --paper: #f7f3ec;
+  --paper2: #efe7da;
+  --card: #fffdf9;
+  --ink: #1b1916;
+  --ink2: #4a443c;
+  --muted: #7a7266;
+  --line: #e3d9c9;
+  --accent: #e4572e;
+  --accent2: #c7431d;
+  --soft: #fbe3d8;
+  --forest: #1c2420;
+  --forest2: #26312b;
+  --sage: #5e9c7e;
+  --gold: #e9b44c;
+  --r: 18px;
+  --sh: 0 1px 2px rgba(40, 28, 14, 0.06), 0 12px 32px -12px rgba(40, 28, 14, 0.18);
+  --fd: var(--font-albert), ui-sans-serif, system-ui, sans-serif;
+  --fb: var(--font-inter-display), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
