@@ -1,0 +1,4 @@
+.next
+node_modules
+macos
+pnpm-lock.yaml
