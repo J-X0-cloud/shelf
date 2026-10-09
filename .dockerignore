@@ -1,0 +1,9 @@
+**/.build
+**/.swiftpm
+**/DerivedData
+.git
+.env
+.env.*
+docs
+macos
+*.md
