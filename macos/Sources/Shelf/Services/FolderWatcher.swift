@@ -1,7 +1,9 @@
 import Foundation
+import ShelfKit
 
 /// Watches a folder and reports files that appear in it. Used by Rules for Downloads, Desktop
-/// and any folder the user adds.
+/// and any folder the user adds. The bookkeeping (partial downloads, iCloud placeholders,
+/// duplicate events) lives in ShelfKit's `FolderChangeDetector`.
 final class FolderWatcher {
     typealias Handler = ([URL]) -> Void
 
@@ -9,7 +11,7 @@ final class FolderWatcher {
     private let handler: Handler
     private let queue = DispatchQueue(label: "com.shelfapp.Shelf.FolderWatcher", qos: .utility)
     private var source: DispatchSourceFileSystemObject?
-    private var known: Set<URL> = []
+    private var detector: FolderChangeDetector?
 
     init(folder: URL, handler: @escaping Handler) {
         self.folder = folder
@@ -25,8 +27,12 @@ final class FolderWatcher {
         let descriptor = open(folder.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
 
-        known = Set(contents())
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write, queue: queue)
+        detector = FolderChangeDetector(existing: contents())
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .rename, .link],
+            queue: queue
+        )
         source.setEventHandler { [weak self] in self?.folderChanged() }
         source.setCancelHandler { close(descriptor) }
         source.resume()
@@ -39,11 +45,9 @@ final class FolderWatcher {
     }
 
     private func folderChanged() {
-        let current = Set(contents())
-        let added = current.subtracting(known)
-            .filter { !isStillDownloading($0) }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        known = current
+        guard var detector else { return }
+        let added = detector.update(with: contents(), at: Date())
+        self.detector = detector
         guard !added.isEmpty else { return }
         DispatchQueue.main.async { [handler] in handler(added) }
     }
@@ -52,12 +56,7 @@ final class FolderWatcher {
         (try? FileManager.default.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: []
         )) ?? []
-    }
-
-    /// Safari and iCloud write partial files first; wait for the final name.
-    private func isStillDownloading(_ url: URL) -> Bool {
-        ["download", "crdownload", "part", "icloud"].contains(url.pathExtension.lowercased())
     }
 }

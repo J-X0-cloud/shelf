@@ -53,6 +53,7 @@ final class LibraryCoordinatorTests: XCTestCase {
         let coordinator = LibraryCoordinator(persistence: FileLayoutPersistence(fileURL: file), workspace: workspace)
         XCTAssertEqual(coordinator.layout.spaces.map(\.name), ShelfLayout.starter().spaces.map(\.name))
         XCTAssertNotNil(coordinator.lastError)
+        XCTAssertNotNil(coordinator.takeError())
     }
 
     func testSwitchingPersistsAndNotifies() {
@@ -173,6 +174,8 @@ final class LibraryCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(reported.count, 2)
         XCTAssertEqual(coordinator.lastError, reported.last)
+        XCTAssertEqual(coordinator.takeError(), reported.last)
+        XCTAssertNil(coordinator.takeError(), "each error is handed over once")
         XCTAssertEqual(coordinator.activeSpace.shelves[0].items.count, 1, "the change itself still applies")
     }
 

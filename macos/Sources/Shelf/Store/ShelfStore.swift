@@ -1,163 +1,129 @@
 import Combine
 import Foundation
 import OSLog
+import ShelfKit
 
-/// Records an automatic move so it can be undone from the menu bar.
-struct AutomaticMove: Equatable {
-    let item: ShelfItem
-    let shelfID: Shelf.ID
-    let ruleID: Rule.ID
-    let date: Date
-}
-
-struct SearchResult: Identifiable {
-    let space: Space
-    let shelf: Shelf
-    let item: ShelfItem
-
-    var id: ShelfItem.ID { item.id }
-}
-
-/// The single source of truth for Spaces, shelves and Rules. Views observe it; every mutation
-/// goes through `commit` so the layout is saved and the Dock stack stays in sync.
+/// The SwiftUI face of `LibraryCoordinator`. Views observe it; every change goes through the
+/// coordinator so the layout is saved and the Dock stack stays in sync. The store also owns the
+/// AppKit-only parts of Rules: the folder watchers and the hourly archive sweep.
 @MainActor
 final class ShelfStore: ObservableObject {
-    /// How long "Undo last rule action" stays available.
-    static let undoWindow: TimeInterval = 10 * 60
-
-    @Published private(set) var layout: ShelfLayout
-    @Published private(set) var lastAutomaticMove: AutomaticMove? = nil
+    @Published private(set) var library: ShelfLibrary
+    @Published private(set) var lastError: String?
     @Published var shelvesHidden = false
     @Published var searchText = ""
 
-    private let persistence: LayoutPersisting
+    let coordinator: LibraryCoordinator
     private let dock: DockServicing
-    private let engine: RuleEngine
-    private let now: () -> Date
     private var watchers: [FolderWatcher] = []
+    private var sweepTimer: Timer?
     private let logger = Logger(subsystem: "com.shelfapp.Shelf", category: "Store")
 
-    init(
-        persistence: LayoutPersisting,
-        dock: DockServicing,
-        engine: RuleEngine = RuleEngine(),
-        now: @escaping () -> Date = Date.init
-    ) {
-        self.persistence = persistence
+    init(coordinator: LibraryCoordinator, dock: DockServicing) {
+        self.coordinator = coordinator
         self.dock = dock
-        self.engine = engine
-        self.now = now
-
-        do {
-            layout = try persistence.load() ?? .starter()
-        } catch {
-            layout = .starter()
-            Logger(subsystem: "com.shelfapp.Shelf", category: "Store")
-                .error("Couldn't read layout, starting fresh: \(error.localizedDescription)")
-        }
+        library = coordinator.library
+        lastError = coordinator.takeError()
     }
 
     static func live() -> ShelfStore {
-        ShelfStore(persistence: FileLayoutPersistence(), dock: WorkspaceDockService())
+        let dock = WorkspaceDockService()
+        let coordinator = LibraryCoordinator(
+            persistence: FileLayoutPersistence(),
+            workspace: dock,
+            inspector: SpotlightInspector(),
+            bookmark: ShelfStore.bookmark(for:)
+        )
+        return ShelfStore(coordinator: coordinator, dock: dock)
     }
 
     // MARK: Reading
 
-    var spaces: [Space] { layout.spaces }
-    var rules: [Rule] { layout.rules }
+    var layout: ShelfLayout { library.layout }
+    var spaces: [Space] { library.spaces }
+    var rules: [Rule] { library.rules }
+    var activeSpace: Space { library.activeSpace }
+    var lastAutomaticMove: AutomaticMove? { library.lastAutomaticMove }
+    var canUndoAutomaticMove: Bool { coordinator.canUndoAutomaticMove }
 
-    var activeSpace: Space {
-        layout.spaces.first { $0.id == layout.activeSpaceID } ?? layout.spaces[0]
-    }
+    var searchResults: [SearchResult] { library.search(searchText) }
 
-    /// Items across every shelf in every Space whose name matches the search text.
-    var searchResults: [SearchResult] {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return [] }
-        return layout.spaces.flatMap { space in
-            space.shelves.flatMap { shelf in
-                shelf.items
-                    .filter { $0.name.localizedCaseInsensitiveContains(query) }
-                    .map { SearchResult(space: space, shelf: shelf, item: $0) }
-            }
-        }
-    }
-
-    func shelfName(id: Shelf.ID) -> String? {
-        guard let location = layout.location(ofShelf: id) else { return nil }
-        return layout.spaces[location.space].shelves[location.shelf].name
-    }
-
-    func spaceName(id: Space.ID?) -> String? {
-        guard let id, let index = layout.spaceIndex(id: id) else { return nil }
-        return layout.spaces[index].name
-    }
+    func shelf(id: Shelf.ID) -> Shelf? { library.layout.shelf(id: id) }
+    func shelfName(id: Shelf.ID) -> String? { library.shelfName(id: id) }
+    func spaceName(id: Space.ID?) -> String? { library.spaceName(id: id) }
 
     // MARK: Spaces
 
     func switchToSpace(id: Space.ID) {
-        guard layout.spaceIndex(id: id) != nil, id != layout.activeSpaceID else { return }
-        commit { $0.activeSpaceID = id }
+        if run({ $0.switchToSpace(id: id) }) { restartWatching() }
     }
 
     /// ⌘1–9. Index is 1-based to match the shortcut.
     func switchToSpace(shortcut index: Int) {
-        guard (1 ... 9).contains(index), index <= layout.spaces.count else { return }
-        switchToSpace(id: layout.spaces[index - 1].id)
+        if run({ $0.switchToSpace(shortcut: index) }) { restartWatching() }
     }
 
     @discardableResult
-    func addSpace(named name: String, colorHex: String) -> Space.ID {
-        let space = Space(name: name, colorHex: colorHex, shelves: [Shelf(name: "Inbox", colorHex: colorHex)])
-        commit { $0.spaces.append(space) }
-        return space.id
+    func addSpace(named name: String) -> Space.ID? {
+        attempt { try $0.addSpace(named: name) }
     }
 
-    // MARK: Shelves
+    func renameSpace(_ id: Space.ID, to name: String) {
+        attempt { try $0.renameSpace(id, to: name) }
+    }
+
+    func deleteSpace(_ id: Space.ID) {
+        attempt { try $0.deleteSpace(id) }
+        restartWatching()
+    }
+
+    func moveSpaces(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        run { $0.moveSpaces(fromOffsets: offsets, toOffset: destination) }
+    }
+
+    // MARK: Shelves and items
 
     @discardableResult
-    func addShelf(named name: String, colorHex: String, to spaceID: Space.ID? = nil) -> Shelf.ID? {
-        guard let index = layout.spaceIndex(id: spaceID ?? activeSpace.id) else { return nil }
-        let shelf = Shelf(name: name, colorHex: colorHex)
-        commit { $0.spaces[index].shelves.append(shelf) }
-        return shelf.id
+    func addShelf(named name: String = "New shelf") -> Shelf.ID? {
+        let color = activeSpace.colorHex
+        return attempt { try $0.addShelf(named: name, colorHex: color) }
     }
 
-    /// Adds URLs to a shelf, skipping ones that are already there. Returns the number added.
+    func updateShelf(_ id: Shelf.ID, _ change: @escaping (inout Shelf) -> Void) {
+        attempt { try $0.updateShelf(id, change) }
+    }
+
+    func deleteShelf(_ id: Shelf.ID) {
+        attempt { try $0.deleteShelf(id) }
+        restartWatching()
+    }
+
+    /// Handles a drop onto a shelf: a tile from another shelf moves, anything else is added.
     @discardableResult
-    func add(_ urls: [URL], toShelf shelfID: Shelf.ID) -> Int {
-        guard let location = layout.location(ofShelf: shelfID) else { return 0 }
-        var added = 0
-        commit { layout in
-            for url in urls {
-                let item = ShelfItem(url: url, bookmark: Self.bookmark(for: url), addedAt: now())
-                if layout.spaces[location.space].shelves[location.shelf].add(item) { added += 1 }
-            }
-        }
-        return added
+    func drop(_ payload: DropPayload, onShelf shelfID: Shelf.ID, at index: Int?, copying: Bool) -> Bool {
+        let plan = DropPlanner().plan(payload, ontoShelf: shelfID, at: index, in: layout, copies: copying)
+        defer { refresh() }
+        return coordinator.apply(plan)
     }
 
-    /// ⇧⌘S: sweep a selection onto the first shelf of the active Space. Originals stay put.
+    /// ⇧⌘S: sweep the Finder selection onto the first shelf of the active Space. Originals stay put.
     @discardableResult
     func stash(_ urls: [URL]) -> Int {
-        guard let shelf = activeSpace.shelves.first else {
-            guard let id = addShelf(named: "Stash", colorHex: activeSpace.colorHex) else { return 0 }
-            return add(urls, toShelf: id)
-        }
-        return add(urls, toShelf: shelf.id)
+        defer { refresh() }
+        return coordinator.stash(urls)
     }
 
     func removeItem(_ itemID: ShelfItem.ID, fromShelf shelfID: Shelf.ID) {
-        guard let location = layout.location(ofShelf: shelfID) else { return }
-        commit { $0.spaces[location.space].shelves[location.shelf].removeItem(id: itemID) }
+        run { $0.removeItem(itemID, fromShelf: shelfID) }
     }
 
-    func markOpened(_ item: ShelfItem, onShelf shelfID: Shelf.ID) {
-        guard let location = layout.location(ofShelf: shelfID),
-              let itemIndex = layout.spaces[location.space].shelves[location.shelf].items.firstIndex(where: { $0.id == item.id })
-        else { return }
-        commit { $0.spaces[location.space].shelves[location.shelf].items[itemIndex].lastOpenedAt = now() }
-        dock.open(item)
+    func open(_ item: ShelfItem, onShelf shelfID: Shelf.ID) {
+        coordinator.open(item, onShelf: shelfID)
+        refresh()
+    }
+
+    func revealInFinder(_ items: [ShelfItem]) {
+        dock.revealInFinder(items)
     }
 
     func toggleShelvesHidden() {
@@ -167,140 +133,138 @@ final class ShelfStore: ObservableObject {
     // MARK: Rules
 
     func setRunsRulesAutomatically(_ enabled: Bool) {
-        commit { $0.runsRulesAutomatically = enabled }
-        if enabled {
-            startWatching()
-        } else {
-            stopWatching()
-        }
+        run { $0.setRunsRulesAutomatically(enabled) }
+        restartWatching()
     }
 
     func addRule(_ rule: Rule) {
-        commit { $0.rules.append(rule) }
+        attempt { try $0.addRule(rule) }
         restartWatching()
     }
 
     func setRule(_ id: Rule.ID, enabled: Bool) {
-        guard let index = layout.rules.firstIndex(where: { $0.id == id }) else { return }
-        commit { $0.rules[index].isEnabled = enabled }
+        run { $0.setRule(id, enabled: enabled) }
         restartWatching()
     }
 
     func deleteRule(_ id: Rule.ID) {
-        commit { $0.rules.removeAll { $0.id == id } }
+        run { $0.deleteRule(id) }
         restartWatching()
     }
 
-    /// Files the rule would catch right now, for the preview in Settings → Rules.
+    func moveRules(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        run { $0.moveRules(fromOffsets: offsets, toOffset: destination) }
+    }
+
     func preview(_ rule: Rule) -> [FileCandidate] {
-        guard let folder = rule.source.directory() else {
-            let candidates = layout.spaces.flatMap(\.shelves).flatMap(\.items).map {
-                FileCandidate(url: $0.url, source: .anyShelf, isScreenshot: false, lastUsed: $0.lastUsed)
-            }
-            return engine.preview(rule, in: candidates)
-        }
-        let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        return engine.preview(rule, in: urls.map { FileCandidate.inspect($0, source: rule.source) })
-    }
-
-    /// Runs the rules against one file. Returns the rule that moved it, if any.
-    @discardableResult
-    func process(_ candidate: FileCandidate) -> Rule? {
-        guard layout.runsRulesAutomatically,
-              let rule = engine.firstMatch(in: layout.rules, for: candidate, activeSpaceID: layout.activeSpaceID),
-              let location = layout.location(ofShelf: rule.destinationShelfID)
-        else { return nil }
-
-        let item = ShelfItem(url: candidate.url, bookmark: Self.bookmark(for: candidate.url), addedAt: now())
-        var added = false
-        commit { added = $0.spaces[location.space].shelves[location.shelf].add(item) }
-        guard added else { return nil }
-
-        lastAutomaticMove = AutomaticMove(item: item, shelfID: rule.destinationShelfID, ruleID: rule.id, date: now())
-        logger.info("Rule filed \(candidate.fileName, privacy: .private) onto a shelf")
-        return rule
-    }
-
-    var canUndoAutomaticMove: Bool {
-        guard let move = lastAutomaticMove else { return false }
-        return now().timeIntervalSince(move.date) <= Self.undoWindow
+        coordinator.preview(rule)
     }
 
     func undoLastAutomaticMove() {
-        guard canUndoAutomaticMove, let move = lastAutomaticMove else { return }
-        removeItem(move.item.id, fromShelf: move.shelfID)
-        lastAutomaticMove = nil
+        coordinator.undoLastAutomaticMove()
+        refresh()
     }
 
     // MARK: Watching folders
 
+    /// Watches the folders the active Space's rules (and global rules) care about, and runs the
+    /// archive sweep once an hour.
     func startWatching() {
         stopWatching()
-        guard layout.runsRulesAutomatically else { return }
-
-        let sources = Set(layout.rules.filter(\.isEnabled).map(\.source))
-        for source in sources {
-            guard let folder = source.directory() else { continue }
+        for (source, folder) in coordinator.watchedFolders {
             let watcher = FolderWatcher(folder: folder) { [weak self] urls in
                 Task { @MainActor in
                     guard let self else { return }
                     for url in urls {
-                        self.process(FileCandidate.inspect(url, source: source))
+                        if let move = self.coordinator.process(url, from: source) {
+                            self.logger.info("Rule filed \(move.item.name, privacy: .private) onto a shelf")
+                        }
                     }
+                    self.refresh()
                 }
             }
             watcher.start()
             watchers.append(watcher)
         }
+
+        guard layout.runsRulesAutomatically else { return }
+        sweepShelves()
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sweepShelves() }
+        }
+    }
+
+    /// Applies archive rules ("untouched for 30 days") to items already on shelves.
+    func sweepShelves() {
+        coordinator.sweepShelves()
+        refresh()
     }
 
     func stopWatching() {
         watchers.forEach { $0.stop() }
         watchers.removeAll()
+        sweepTimer?.invalidate()
+        sweepTimer = nil
     }
 
+    private var isWatching: Bool { !watchers.isEmpty || sweepTimer != nil }
+
     private func restartWatching() {
-        if !watchers.isEmpty { startWatching() }
+        if isWatching || layout.runsRulesAutomatically { startWatching() }
     }
 
     // MARK: Import & export
 
     func exportLayout(to url: URL) throws {
-        try LayoutCoder.encoder.encode(layout).write(to: url, options: .atomic)
+        try coordinator.exportLayout(to: url)
     }
 
     func importLayout(from url: URL) throws {
-        let imported = try LayoutCoder.decoder.decode(ShelfLayout.self, from: Data(contentsOf: url))
-        commit { $0 = imported }
+        try coordinator.importLayout(from: url)
+        refresh()
         restartWatching()
     }
 
-    // MARK: Persistence
+    func importSpaces(from url: URL) throws {
+        try coordinator.importSpaces(from: url)
+        refresh()
+    }
 
-    private func commit(_ mutate: (inout ShelfLayout) -> Void) {
-        let previousStack = activeSpace.shelves.flatMap(\.items)
-        var draft = layout
-        mutate(&draft)
-        guard draft != layout else { return }
-        layout = draft
+    // MARK: Helpers
 
+    func clearError() {
+        lastError = nil
+    }
+
+    /// Applies a change through the coordinator and publishes the result.
+    @discardableResult
+    private func run<T>(_ change: (inout ShelfLibrary) -> T) -> T {
+        defer { refresh() }
+        return coordinator.perform(change)
+    }
+
+    /// Like `run`, for changes that can be refused. The reason is shown in Settings.
+    @discardableResult
+    private func attempt<T>(_ change: (inout ShelfLibrary) throws -> T) -> T? {
+        defer { refresh() }
         do {
-            try persistence.save(layout)
+            return try coordinator.perform(change)
         } catch {
-            logger.error("Couldn't save layout: \(error.localizedDescription)")
-        }
-
-        // The Dock stack mirrors the active Space; only rebuild it when that set of items changed.
-        let stack = activeSpace.shelves.flatMap(\.items)
-        guard stack != previousStack else { return }
-        do {
-            try dock.syncDockStack(with: stack)
-        } catch {
-            logger.error("Couldn't sync Dock stack: \(error.localizedDescription)")
+            lastError = (error as? LibraryError)?.description ?? error.localizedDescription
+            return nil
         }
     }
 
-    private static func bookmark(for url: URL) -> Data? {
+    /// Copies the coordinator's state into the published properties.
+    private func refresh() {
+        if coordinator.library != library { library = coordinator.library }
+        if let error = coordinator.takeError() {
+            lastError = error
+            logger.error("\(error, privacy: .public)")
+        }
+    }
+
+    nonisolated static func bookmark(for url: URL) -> Data? {
         guard url.isFileURL else { return nil }
         return try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
     }

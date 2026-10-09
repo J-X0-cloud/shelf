@@ -1,4 +1,5 @@
 import AppKit
+import ShelfKit
 import SwiftUI
 
 /// The menu-bar popover: search, Spaces with ⌘1–9, quick actions and Settings.
@@ -11,9 +12,13 @@ struct SpacesMenu: View {
 
             if store.searchText.isEmpty {
                 sectionLabel("Spaces")
-                ForEach(Array(store.spaces.enumerated()), id: \.element.id) { index, space in
-                    SpaceRow(space: space, shortcut: index < 9 ? "⌘\(index + 1)" : nil, isActive: space.id == store.activeSpace.id)
-                        .onTapGesture { store.switchToSpace(id: space.id) }
+                ForEach(store.spaces) { space in
+                    SpaceRow(
+                        space: space,
+                        shortcut: store.library.shortcutLabel(forSpace: space.id),
+                        isActive: space.id == store.activeSpace.id
+                    )
+                    .onTapGesture { store.switchToSpace(id: space.id) }
                 }
             } else {
                 searchResults
@@ -22,7 +27,7 @@ struct SpacesMenu: View {
             Divider().padding(.vertical, 4)
 
             MenuRow(title: "New shelf", shortcut: "⌥⌘N") {
-                store.addShelf(named: "New shelf", colorHex: store.activeSpace.colorHex)
+                store.addShelf()
             }
             MenuRow(title: "Stash selection", shortcut: "⇧⌘S") {
                 store.stash(FinderSelection.current())
@@ -65,7 +70,7 @@ struct SpacesMenu: View {
         } else {
             ForEach(results) { result in
                 MenuRow(title: result.item.name, detail: "\(result.shelf.name) · \(result.space.name)") {
-                    store.markOpened(result.item, onShelf: result.shelf.id)
+                    store.open(result.item, onShelf: result.shelf.id)
                 }
             }
         }
@@ -131,8 +136,8 @@ private struct SpaceRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .foregroundStyle(isActive ? Color.white : Color.primary)
-        .background(RoundedRectangle(cornerRadius: 7).fill(isActive ? Color.accentColor : .clear))
+        .foregroundStyle(isActive ? Color.foreground(on: space.colorHex) : Color.primary)
+        .background(RoundedRectangle(cornerRadius: 7).fill(isActive ? Color(hex: space.colorHex) : Color.clear))
         .contentShape(Rectangle())
         .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }

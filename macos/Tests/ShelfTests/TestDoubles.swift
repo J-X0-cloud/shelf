@@ -1,27 +1,13 @@
 import AppKit
+import ShelfKit
 @testable import Shelf
-
-final class InMemoryPersistence: LayoutPersisting {
-    var stored: ShelfLayout?
-    private(set) var saveCount = 0
-
-    init(_ layout: ShelfLayout? = nil) {
-        stored = layout
-    }
-
-    func load() throws -> ShelfLayout? { stored }
-
-    func save(_ layout: ShelfLayout) throws {
-        stored = layout
-        saveCount += 1
-    }
-}
 
 final class MockDockService: DockServicing {
     var isAccessibilityTrusted = true
     var isFrontmostAppFullScreen = false
     private(set) var syncedStacks: [[ShelfItem]] = []
     private(set) var openedItems: [ShelfItem] = []
+    private(set) var revealed: [[ShelfItem]] = []
 
     func requestAccessibilityAccess() {}
 
@@ -33,7 +19,9 @@ final class MockDockService: DockServicing {
         openedItems.append(item)
     }
 
-    func revealInFinder(_ items: [ShelfItem]) {}
+    func revealInFinder(_ items: [ShelfItem]) {
+        revealed.append(items)
+    }
 
     func icon(for item: ShelfItem) -> NSImage { NSImage() }
 }

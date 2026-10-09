@@ -1,3 +1,5 @@
+import AppKit
+import ShelfKit
 import SwiftUI
 
 /// Settings → Rules: plain-language rules, each with its own switch, plus an editor with a live preview.
@@ -108,17 +110,10 @@ struct RuleEditor: View {
     enum SourceChoice: String, CaseIterable, Identifiable {
         case downloads = "Downloads"
         case desktop = "Desktop"
+        case folder = "Other folder…"
         case anyShelf = "Any shelf"
 
         var id: String { rawValue }
-
-        var source: Rule.Source {
-            switch self {
-            case .downloads: .downloads
-            case .desktop: .desktop
-            case .anyShelf: .anyShelf
-            }
-        }
     }
 
     enum ConditionChoice: String, CaseIterable, Identifiable {
@@ -141,6 +136,7 @@ struct RuleEditor: View {
     @State private var days = 30
     @State private var shelfID: Shelf.ID?
     @State private var appliesToActiveSpaceOnly = true
+    @State private var folder: URL?
 
     private struct ShelfChoice: Identifiable {
         let space: Space
@@ -161,10 +157,19 @@ struct RuleEditor: View {
         }
     }
 
+    private var ruleSource: Rule.Source? {
+        switch source {
+        case .downloads: Rule.Source.downloads
+        case .desktop: Rule.Source.desktop
+        case .anyShelf: Rule.Source.anyShelf
+        case .folder: folder.map { Rule.Source.folder($0) }
+        }
+    }
+
     private var draft: Rule? {
-        guard let shelfID else { return nil }
+        guard let shelfID, let ruleSource, condition.isValid else { return nil }
         return Rule(
-            source: source.source,
+            source: ruleSource,
             condition: condition,
             destinationShelfID: shelfID,
             spaceID: appliesToActiveSpaceOnly ? store.activeSpace.id : nil
@@ -177,6 +182,14 @@ struct RuleEditor: View {
             Form {
                 Picker("When a file in", selection: $source) {
                     ForEach(SourceChoice.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .onChange(of: source) { choice in
+                    if choice == .folder, folder == nil { chooseFolder() }
+                }
+                if source == .folder {
+                    LabeledContent("Folder") {
+                        Button(folder?.lastPathComponent ?? "Choose…", action: chooseFolder)
+                    }
                 }
                 Picker("Condition", selection: $conditionChoice) {
                     ForEach(ConditionChoice.allCases) { Text($0.rawValue).tag($0) }
@@ -218,5 +231,18 @@ struct RuleEditor: View {
         }
         .padding(20)
         .frame(width: 440)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Watch Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            folder = url
+        } else if folder == nil {
+            source = .downloads
+        }
     }
 }

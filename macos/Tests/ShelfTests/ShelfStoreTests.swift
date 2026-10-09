@@ -1,43 +1,45 @@
+import Combine
+import ShelfKit
 import XCTest
 @testable import Shelf
 
+/// The store is a thin layer over ShelfKit's `LibraryCoordinator` (tested on every platform in
+/// ShelfKitTests). These tests cover what the store adds: publishing, error surfacing and drops.
 @MainActor
 final class ShelfStoreTests: XCTestCase {
-    private var persistence: InMemoryPersistence!
+    private var persistence: InMemoryLayoutPersistence!
     private var dock: MockDockService!
     private var clock: Date!
 
     override func setUp() async throws {
-        persistence = InMemoryPersistence(Fixtures.layout())
+        persistence = InMemoryLayoutPersistence(Fixtures.layout())
         dock = MockDockService()
         clock = ISO8601DateFormatter().date(from: "2026-09-24T09:41:00Z")!
     }
 
     private func makeStore(rules: [Rule] = []) -> ShelfStore {
         persistence.stored = Fixtures.layout(rules: rules)
-        return ShelfStore(persistence: persistence, dock: dock, now: { [unowned self] in self.clock })
+        let coordinator = LibraryCoordinator(
+            persistence: persistence,
+            workspace: dock,
+            inspector: FileSystemInspector(),
+            now: { [unowned self] in self.clock }
+        )
+        return ShelfStore(coordinator: coordinator, dock: dock)
     }
 
-    func testLoadsPersistedLayout() {
+    func testPublishesEveryChange() {
         let store = makeStore()
-        XCTAssertEqual(store.spaces.map(\.name), ["Studio", "Harbor Coffee rebrand", "Admin & invoices"])
-        XCTAssertEqual(store.activeSpace.id, Fixtures.studio.id)
-    }
+        var published: [Space.ID] = []
+        let subscription = store.$library.dropFirst().sink { published.append($0.activeSpace.id) }
 
-    func testFallsBackToStarterLayoutOnFirstLaunch() {
-        let store = ShelfStore(persistence: InMemoryPersistence(), dock: dock)
-        XCTAssertFalse(store.spaces.isEmpty)
-        XCTAssertFalse(store.rules.isEmpty)
-    }
-
-    func testSwitchingByShortcutPersistsAndIgnoresOutOfRange() {
-        let store = makeStore()
         store.switchToSpace(shortcut: 2)
-        XCTAssertEqual(store.activeSpace.id, Fixtures.harbor.id)
-        XCTAssertEqual(persistence.stored?.activeSpaceID, Fixtures.harbor.id)
+        store.switchToSpace(shortcut: 2)
+        store.switchToSpace(shortcut: 3)
 
-        store.switchToSpace(shortcut: 9)
-        XCTAssertEqual(store.activeSpace.id, Fixtures.harbor.id)
+        XCTAssertEqual(published, [Fixtures.harbor.id, Fixtures.admin.id])
+        XCTAssertEqual(persistence.stored?.activeSpaceID, Fixtures.admin.id)
+        subscription.cancel()
     }
 
     func testStashSkipsDuplicatesAndSyncsDockStack() {
@@ -50,13 +52,31 @@ final class ShelfStoreTests: XCTestCase {
         XCTAssertEqual(dock.syncedStacks.last?.count, 2)
     }
 
-    func testProcessFilesMatchingRuleAndSupportsUndo() {
+    func testDraggingATileToAnotherShelfMovesIt() {
+        let store = makeStore()
+        let archiveID = store.addShelf(named: "Archive")!
+        store.stash([Fixtures.file("logo-final.svg")])
+
+        let moved = store.drop(DropPayload(urls: [Fixtures.file("logo-final.svg")]), onShelf: archiveID, at: 0, copying: false)
+
+        XCTAssertTrue(moved)
+        XCTAssertTrue(store.activeSpace.shelves[0].items.isEmpty)
+        XCTAssertEqual(store.shelf(id: archiveID)?.items.map(\.name), ["logo-final.svg"])
+    }
+
+    func testRefusedChangesSurfaceAReason() {
+        let store = makeStore()
+        XCTAssertNil(store.addSpace(named: "   "))
+        XCTAssertEqual(store.lastError, LibraryError.emptyName.description)
+        store.clearError()
+        XCTAssertNil(store.lastError)
+    }
+
+    func testRulesFileAndUndo() {
         let rule = Rule(source: .downloads, condition: .extensionIs("pdf"), destinationShelfID: Fixtures.paperwork.id)
         let store = makeStore(rules: [rule])
-        let file = FileCandidate(url: Fixtures.file("invoice-0932.pdf"), source: .downloads, isScreenshot: false, lastUsed: nil)
 
-        XCTAssertEqual(store.process(file)?.id, rule.id)
-        XCTAssertEqual(store.layout.spaces[2].shelves[0].items.map(\.name), ["invoice-0932.pdf"])
+        store.coordinator.process(FileCandidate(url: Fixtures.file("invoice-0932.pdf"), source: .downloads))
         XCTAssertTrue(store.canUndoAutomaticMove)
 
         store.undoLastAutomaticMove()
@@ -64,37 +84,20 @@ final class ShelfStoreTests: XCTestCase {
         XCTAssertNil(store.lastAutomaticMove)
     }
 
-    func testUndoExpiresAfterTenMinutes() {
-        let rule = Rule(source: .downloads, condition: .extensionIs("pdf"), destinationShelfID: Fixtures.paperwork.id)
-        let store = makeStore(rules: [rule])
-        store.process(FileCandidate(url: Fixtures.file("menu-proof.pdf"), source: .downloads, isScreenshot: false, lastUsed: nil))
-
-        clock = clock.addingTimeInterval(ShelfStore.undoWindow + 1)
-        XCTAssertFalse(store.canUndoAutomaticMove)
-    }
-
-    func testRulesDoNothingWhenAutomaticRunsAreOff() {
-        let rule = Rule(source: .downloads, condition: .extensionIs("pdf"), destinationShelfID: Fixtures.paperwork.id)
-        let store = makeStore(rules: [rule])
-        store.setRunsRulesAutomatically(false)
-
-        XCTAssertNil(store.process(FileCandidate(url: Fixtures.file("a.pdf"), source: .downloads, isScreenshot: false, lastUsed: nil)))
-    }
-
     func testSearchFindsItemsAcrossSpaces() {
         let store = makeStore()
-        store.add([Fixtures.file("palette.ase")], toShelf: Fixtures.brand.id)
+        store.drop(DropPayload(urls: [Fixtures.file("palette.ase")]), onShelf: Fixtures.brand.id, at: nil, copying: false)
         store.searchText = "PALETTE"
 
         XCTAssertEqual(store.searchResults.map(\.space.name), ["Harbor Coffee rebrand"])
     }
 
-    func testOpeningRecordsLastUsedAndOpensThroughDock() {
+    func testOpeningGoesThroughTheDock() {
         let store = makeStore()
-        store.add([Fixtures.file("Brief v3.docx")], toShelf: Fixtures.inbox.id)
+        store.stash([Fixtures.file("Brief v3.docx")])
         let item = store.activeSpace.shelves[0].items[0]
 
-        store.markOpened(item, onShelf: Fixtures.inbox.id)
+        store.open(item, onShelf: Fixtures.inbox.id)
 
         XCTAssertEqual(store.activeSpace.shelves[0].items[0].lastOpenedAt, clock)
         XCTAssertEqual(dock.openedItems.map(\.id), [item.id])

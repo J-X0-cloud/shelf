@@ -19,6 +19,7 @@ struct ShelfApp: App {
             PreferencesWindow()
                 .environmentObject(appDelegate.store)
                 .environmentObject(appDelegate.updates)
+                .environmentObject(appDelegate.license)
         }
     }
 }
@@ -29,6 +30,7 @@ struct ShelfApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = ShelfStore.live()
     let updates = UpdateController()
+    let license = LicenseClient()
     private var panels: ShelfPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {

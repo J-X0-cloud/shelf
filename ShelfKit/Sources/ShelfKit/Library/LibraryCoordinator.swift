@@ -16,8 +16,10 @@ public typealias BookmarkProvider = (URL) -> Data?
 /// told. `ShelfStore` in the app is a thin `ObservableObject` over this type.
 public final class LibraryCoordinator {
     public private(set) var library: ShelfLibrary
-    /// The last error from saving or syncing; surfaced in Settings → General.
+    /// The last error from loading, saving or syncing; surfaced in Settings → General.
     public private(set) var lastError: String?
+    /// An error nobody has shown yet. `takeError()` hands it over once.
+    private var pendingError: String?
 
     /// Called after every change that altered the library.
     public var onChange: ((ShelfLibrary) -> Void)?
@@ -54,6 +56,7 @@ public final class LibraryCoordinator {
         } catch {
             library = ShelfLibrary(layout: .starter())
             lastError = "Couldn't read the saved layout, so Shelf started fresh: \(error)"
+            pendingError = lastError
         }
     }
 
@@ -208,8 +211,15 @@ public final class LibraryCoordinator {
         }
     }
 
+    /// Returns the newest error that hasn't been shown yet, and forgets it.
+    public func takeError() -> String? {
+        defer { pendingError = nil }
+        return pendingError
+    }
+
     private func report(_ message: String) {
         lastError = message
+        pendingError = message
         onError?(message)
     }
 }
