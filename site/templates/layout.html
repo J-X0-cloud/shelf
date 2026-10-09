@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#F7F3EC" />
+    <title>{{page.title}}</title>
+    <meta name="description" content="{{page.description}}" />
+    <link rel="canonical" href="{{page.url}}" />
+    <meta property="og:title" content="{{page.title}}" />
+    <meta property="og:description" content="{{page.description}}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="{{page.url}}" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" href="/shelf-icon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/rss+xml" title="Shelf updates" href="{{site.url}}/appcast.xml" />
+    <link rel="preload" href="/fonts/albert-sans-var.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/inter-display-400.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/layout.css" />
+    <link rel="stylesheet" href="/css/macos.css" />
+    <link rel="stylesheet" href="/css/pages.css" />
+    <link rel="stylesheet" href="/css/responsive.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    {{> header}}
+    <main id="main">
+{{{content}}}
+    </main>
+    {{> footer}}
+  </body>
+</html>

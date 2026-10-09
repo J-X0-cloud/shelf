@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F3825A"/><stop offset="1" stop-color="#C7431D"/></linearGradient>
+<linearGradient id="gl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
+<path d="M32 2c16.6 0 23.4 0 26.7 3.3S62 15.4 62 32s0 23.4-3.3 26.7S48.6 62 32 62 8.6 62 5.3 58.7 2 48.6 2 32 2 8.6 5.3 5.3 15.4 2 32 2Z" fill="url(#bg)"/>
+<path d="M32 2c16.6 0 23.4 0 26.7 3.3S62 15.4 62 32H2C2 15.4 2 8.6 5.3 5.3S15.4 2 32 2Z" fill="url(#gl)"/>
+<rect x="15" y="15" width="10" height="13" rx="2.2" fill="#FFF4EC"/>
+<rect x="27.5" y="12" width="8" height="16" rx="2.2" fill="#FFD2BC"/>
+<rect x="38" y="18" width="11" height="10" rx="2.2" fill="#FFF4EC"/>
+<rect x="12" y="29.5" width="40" height="4" rx="2" fill="#fff"/>
+<rect x="16" y="39" width="15" height="10" rx="2.2" fill="#FFD2BC"/>
+<rect x="33.5" y="36" width="8" height="13" rx="2.2" fill="#FFF4EC"/>
+<circle cx="46" cy="45" r="4" fill="#FFF4EC"/>
+<rect x="12" y="50.5" width="40" height="4" rx="2" fill="#fff" opacity=".92"/>
+</svg>

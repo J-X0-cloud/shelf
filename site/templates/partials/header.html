@@ -1,0 +1,26 @@
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" aria-label="Shelf home" href="/"
+      ><img alt="" width="30" height="30" src="/shelf-icon.svg" /><span>Shelf</span></a
+    >
+    <nav class="nav-links" aria-label="Main">
+      <a href="/features"{{current /features}}>Features</a><a href="/pricing"{{current /pricing}}>Pricing</a
+      ><a href="/changelog"{{current /changelog}}>Changelog</a
+      ><a href="/support"{{current /support}}>Support</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-sm btn-dark" href="#download"
+        >{{icon down 16 2}}<span>Download</span></a
+      >
+      <details class="mnav">
+        <summary aria-label="Open menu"><span></span><span></span></summary>
+        <div class="mnav-panel">
+          <a href="/features"{{current /features}}>Features</a><a href="/pricing"{{current /pricing}}>Pricing</a
+          ><a href="/changelog"{{current /changelog}}>Changelog</a
+          ><a href="/support"{{current /support}}>Support</a
+          ><a class="btn btn-accent" href="/pricing">Buy Shelf — {{price.personal}}</a>
+        </div>
+      </details>
+    </div>
+  </div>
+</header>
